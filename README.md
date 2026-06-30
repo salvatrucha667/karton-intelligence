@@ -2,272 +2,373 @@
 
 ## 🎯 Objectif
 
-Ce projet permet l'intégration complète de **CAPEv2 Sandbox** et **CAPA** dans une pipeline de threat intelligence.
+Karton Intelligence Pipeline est une chaîne d'orchestration d'analyse de
+malwares basée sur **Karton**, **MWDB**, **CAPEv2** et **CAPA**.
 
-Il transforme automatiquement un échantillon malware en :
+L'objectif est d'automatiser l'enrichissement d'échantillons déposés
+dans MWDB en exécutant plusieurs analyseurs spécialisés, puis de
+réinjecter les résultats dans MWDB afin de centraliser l'ensemble des
+informations utiles aux analystes SOC, CTI et pour un analyste CSIRT.
 
-- analyse dynamique CAPEv2
-- analyse des capacités 
-- extraction IOCs / TTPs / MBCs / signatures / payloads / config / processtree
-- Rapport enrichie vers MWDB
-- rapport consolidé exploitable par un analyste.
+Le pipeline permet notamment :
 
----
+-   la récupération automatique des échantillons depuis MWDB ;
+-   l'envoie de l'échatillions vers une instance CAPEv2 pour l'analyse dynamique ;
+-   l'analyse statique via CAPA ;
+-   l'extraction de chaînes de caractères ;
+-   l'extraction d'IOCs, TTPs, MBCs, signatures et artefacts ;
+-   l'enrichissement des objets MWDB ;
 
-## 🧩 Position dans la pipeline
+L'instance CAPEv2 n'est pas intégrer au projet
 
-```text
-MWDB Core "submit sample"
-        ↓
-KartonCAPEv2 plugin
-        ↓
-CAPEv2 Sandbox execution
-        ↓
-Extraction intelligence (IOC / TTP / behavior)
-        ↓
-Consolidated CTI report
-        ↓
-Karton "analyzed sample"
-        ↓
-SOC / CTI / MWDB / SIEM
+------------------------------------------------------------------------
+
+# 🏗️ Architecture
+
+Le pipeline repose sur une architecture **event-driven** utilisant
+Karton.
+
+Composants :
+
+-   MWDB
+-   Karton
+-   CAPA
+-   Strings
+-   CAPEv2 --> instance externe non implementer sur le projet
+
+------------------------------------------------------------------------
+
+# 🧩 Pipeline d'intelligence
+
+``` text
+                           +----------------+
+                           | Submit Sample  |
+                           +-------+--------+
+                                   |
+                                   v
+                           +----------------+
+                           |   MWDB Core    |
+                           +-------+--------+
+                                   |
+          +------------------------+------------------------+
+          |                        |                        |
+          v                        v                        v
+ +----------------+       +----------------+       +----------------+
+ | Karton-CAPEv2  |       | Karton-CAPA    |       | Karton-Strings |
+ +-------+--------+       +-------+--------+       +-------+--------+
+         |                        |                        |
+         |                        |                        |
+         |              Execute CAPA binary       Extract strings
+         |                        |                        |
+         |                        |                        |
+         |                +-------v--------+       +-------v--------+
+         |                |     Error ?    |       |     Error ?    |
+         |                +-------+--------+       +-------+--------+
+         |                        |                        |
+         |                        |                        |
+         |               +--------v---------+      +-------v--------+
+         |               |  MWDB Reporter   |      | MWDB  Reporter |
+         |               +--------+---------+      +----------------+
+         |                                               
+         |                                               
+         |                
+         |
+         v
+ +----------------------+
+ | Linux or Windows ?   |
+ +----------+-----------+
+            |
+      +-----+-----+
+      |           |
+      v           v
+  Guest Linux  Guest Windows
+      \           /
+       \         /
+        v       v
+ +----------------------+
+ | CAPEv2 Sandbox       |
+ +----------+-----------+
+            |
+            v
+ +----------------------+
+ | Wait for completion  |
+ +----------+-----------+
+            |
+            v
+ +----------------------+
+ | Extract report data  |
+ | - IOCs               |
+ | - TTPs               |
+ | - Process tree       |
+ | - Signatures         |
+ +----------+-----------+
+            |
+            v
+ +----------------------+
+ | Consolidated Report  |
+ +----------+-----------+
+            |
+            v
+ +----------------------+
+ | Tags / Comments /    |
+ | Attributes           |
+ +----------+-----------+
+            |
+            v
+ +----------------------+
+ | MWDB Reporter        |
+ +----------+-----------+
 ```
 
----
+------------------------------------------------------------------------
 
-## ⚙️ Composant principal
+# 🔄 Modèle d'événements
 
-### 🧠 KartonCapev2
+    Sample
+       │
+       ▼
+    MWDB
+       │
+       ▼
+    Task Karton
+       │
+       ├── karton-capev2
+       ├── karton-capa
+       └── karton-strings
+              │
+              ▼
+    Enrichissement
+              │
+              ▼
+    MWDB
 
-Service Karton responsable de :
+------------------------------------------------------------------------
 
-- sélection des fichiers analysables
-- soumission CAPE API avec le choix du guest intélligent 
-- polling de l’analyse
-- récupération du rapport complet
-- extraction intelligence
-- génération rapport consolidé
-- émission d’un task Karton enrichi
+# ⚙️ Composants
 
----
+## Karton-CAPEv2
 
-### 🧠 KartonFlareCapa
-Service Karton responsable de :
+Responsable de :
 
-- sélection des fichiers analysables
-- soumission CAPE API avec le choix du guest intélligent 
-- polling de l’analyse
-- récupération du rapport complet
-- extraction intelligence
-- génération rapport consolidé
-- émission d’un task Karton enrichi
+-   sélection des fichiers analysables ;
+-   choix automatique du guest Linux ou Windows ;
+-   soumission à l'API CAPEv2 ;
+-   suivi de l'analyse ;
+-   récupération du rapport ;
+-   extraction des IOCs ;
+-   extraction des TTPs ;
+-   extraction des signatures ;
+-   génération du rapport consolidé ;
+-   enrichissement de MWDB.
 
----
+## Karton-CAPA
 
+-   exécution de CAPA ;
+-   récupération des capacités ;
+-   mapping MITRE ATT&CK ;
+-   enrichissement MWDB.
 
-### 🧠 KartonStrings
-Service Karton responsable de :
+## Karton-Strings
 
-- Extraire les chaine de caractére via le binaire strings
-- Rapport MWDB complet
----
+-   extraction des chaînes ;
+-   génération du rapport ;
+-   enrichissement MWDB.
 
-## 🔁 Flux de traitement
+------------------------------------------------------------------------
 
-### 1. Filtrage initial
+# 🔁 Flux de traitement
 
-- type: sample
-- stage: recognized
-- taille fichier (100B → 200MB)
-- extension supportée
-- heuristique exécutable
+## 1. Filtrage
 
----
+-   type : sample
+-   stage : recognized
+-   taille : 100 B → 200 MB
+-   extension supportée
+-   heuristique exécutable
 
-### 2. Soumission CAPE
+## 2. Analyse CAPE
 
-**Endpoint :**
-
-```
-POST /apiv2/tasks/create/file/
-```
+POST `/apiv2/tasks/create/file/`
 
 Options :
 
-- screenshots
-- procmon
-- CAPE extraction
-- behavioral analysis
-- config extraction
+-   screenshots
+-   Procmon
+-   behavioral analysis
+-   config extraction
+-   payload extraction
 
-Auto package :
+## 3. Polling
 
-- doc / pdf / archive / script / exe
-
----
-
-### 3. Suivi d’exécution
-
-```
-GET /apiv2/tasks/view/{task_id}/
-```
+GET `/apiv2/tasks/view/{task_id}/`
 
 États :
 
-- reported → success
-- failure, timeout, failed_* → error
-- timeout global (30 min)
+-   reported
+-   running
+-   failed
+-   timeout
 
----
+## 4. Rapport
 
-### 4. Récupération rapport
+GET `/apiv2/tasks/get/report/{task_id}/`
 
-```
-GET /apiv2/tasks/get/report/{task_id}/
-```
+------------------------------------------------------------------------
 
----
+# 🧠 Intelligence extraite
 
-## 🧠 Intelligence extraite
+## IOC
 
-### 📡 IOC (Indicators of Compromise)
-
-- domains
-- IPs
-- URLs
-- network flows
-- mutexes
-- registry keys
-- files
-- processes
+-   Domains
+-   IPs
+-   URLs
+-   DNS
+-   HTTP
+-   Mutex
+-   Registry
+-   Files
+-   Processes
 
 Relations :
 
-- domain ↔ IP
-- IP ↔ URL
-- process ↔ file/registry
-- flow ↔ destination IP
+-   Domain ↔ IP
+-   IP ↔ URL
+-   Process ↔ Registry
+-   Process ↔ File
 
----
+## MITRE ATT&CK
 
-### 🧬 TTP (MITRE / MBC)
+-   Techniques
+-   Tactiques
 
-- ATT&CK TTP IDs
-- MBC mappings
-- CAPE signatures
+## Malware Behavior Catalog
 
----
+-   MBC mappings
 
-### 🚨 Signatures comportementales
+## Signatures CAPE
 
-| Score CAPE | Severity |
-|------------|----------|
-| 0 | Informational |
-| 1 | Low |
-| 2 | Medium |
-| 3 | High |
+-   comportement
+-   score
+-   sévérité
 
----
+## Payloads
 
-### 📦 Payloads & configs
+-   dropped files
+-   payloads
+-   configurations
+-   YARA
+-   hashes
 
-- CAPE payloads
-- dropped files
-- configs
-- YARA matches
-- hashes (MD5 / SHA1 / SHA256)
+## Process Tree
 
----
+-   vue hiérarchique
+-   vue aplatie
 
-### 🌳 Process tree
+------------------------------------------------------------------------
 
-- arbre hiérarchique
-- vue flatten (cmdline, user, path)
+# 🧠 Modèle de données enrichi
 
----
+Chaque analyse produit :
 
-## 🧾 Rapport consolidé
+-   métadonnées
+-   IOCs
+-   TTPs
+-   MBC
+-   Signatures
+-   Process Tree
+-   Relations
+-   Hashes
+-   Configurations
 
-```json
+------------------------------------------------------------------------
+
+# 🧾 Rapport consolidé
+
+``` json
 {
   "analysis_metadata": {},
   "sample_information": {},
-  "threat_assessment": {},
+  "iocs": {},
+  "ttps": {},
+  "mbc": {},
+  "process_tree": {},
+  "payloads": {},
   "summary": {}
 }
 ```
 
----
+------------------------------------------------------------------------
 
-## 🏷️ Tags Karton
+# 🏷️ Tags MWDB
 
-- karton:capeV2
-- karton:capeV2:iocs
-- karton:capeV2:signatures
-- karton:capeV2:ttps
-- karton:capeV2:payloads
-- karton:capeV2:processtree
-- cape:id:{task_id}
-- karton:capeV2:threat:*
+-   karton:capev2
+-   karton:capev2:iocs
+-   karton:capev2:payloads
+-   karton:capev2:ttps
+-   karton:capev2:signatures
+-   karton:capev2:processtree
+-   cape:id:{task_id}
 
----
+------------------------------------------------------------------------
 
-## 📤 Output Karton
+# 📊 Observabilité
 
-```python
-Task(
-    type="sample",
-    stage="analyzed",
-    payload={
-        parent: sample,
-        sample: consolidated_report,
-        attributes: CTI_data,
-        comments: [
-            CAPE link,
-            VirusTotal link
-        ],
-        tags: [...]
-    }
-)
-```
+-   logs des workers
+-   suivi des tâches
+-   corrélation par task_id
+-   gestion des erreurs
+-   reporting des statuts
 
----
+------------------------------------------------------------------------
 
-## ⚙️ Configuration
+# 🔐 Sécurité
 
-```ini
-[cape]
-api_url = http://cape-web:8000
-api_token = ""
-poll_interval = 30
-max_wait_time = 1800
-timeout = 300
-package = exe
-screenshots = true
-procmon = true
-```
+-   exécution en sandbox isolée ;
+-   aucun exécutable lancé sur l'hôte de l'analyste, tout est fait via les guest CAPEv2 ;
+-   timeout configurable.
 
----
+------------------------------------------------------------------------
 
-## 🧪 Cas d’usage
+# ⚠️ Limitations
 
-- SOC automation
-- malware triage
-- CTI enrichment
-- SIEM IOC ingestion
-- Purple Team analysis
+-   dépend de la disponibilité des guests CAPEv2 ;
+-   certains packers limitent CAPA ;
+-   certaines chaînes peuvent être bruitées ;
+-   les analyses sandbox sont limitées par le timeout (30 minutes).
 
----
+------------------------------------------------------------------------
 
-## 🚨 Gestion d’erreurs
+# 🧪 Cas d'usage
 
-En cas d’échec :
+-   SOC Automation
+-   CTI
+-   Malware Triage
+-   Purple Team
+-   Threat Hunting
+-   IOC Enrichment
+-   Importation OpenCTI pour l'enrichissement de la plateforme
 
-- report d’erreur structuré
-- task Karton stage: analyzed
-- traçabilité complète
+------------------------------------------------------------------------
 
----
+# 🚀 Roadmap
 
-## 🔐 Résultat final
+-   [ ] VirusTotal
+-   [ ] YARA automatique
+-   [ ] ClamAV
+-   [ ] Suricata
+-   [ ] Sigma
+-   [ ] Sandbox Linux avancée
+-   [ ] Export STIX 2.1
+-   [ ] Dashboard Grafana pour le monitoring des service Karton
 
-👉 CAPE devient un moteur CTI automatisé intégré à Karton
+------------------------------------------------------------------------
+
+# 🤝 Contribution
+
+Les contributions sont les bienvenues via Pull Request.
+
+------------------------------------------------------------------------
+
+# 📄 Licence
+
+À définir.
